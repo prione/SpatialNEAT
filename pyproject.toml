@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "growth-hyperneat"
+version = "0.2.0"
+description = "2D/3D evolvable substrates, recurrent networks and explicit structural development"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26,<3", "neat-python==0.92"]
+
+[project.urls]
+Repository = "https://github.com/prione/SpatialNEAT"
+Issues = "https://github.com/prione/SpatialNEAT/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.9", "build"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+growth_hyperneat = ["default_neat.ini"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

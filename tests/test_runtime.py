@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pytest
 
-from growth_hyperneat import Edge, GrowingRNN, NetworkDefinition, Node
+from spatial_neat import Edge, GrowingRNN, NetworkDefinition, Node
 
 
 def network(extra=False):

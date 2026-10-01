@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from growth_hyperneat import ESConfig, ESDeveloper, GrowingRNN, Node, Region, Substrate
+from spatial_neat import ESConfig, ESDeveloper, GrowingRNN, Node, Region, Substrate
 
 
 class Pattern:

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from test_runtime_development import definition, seeded
 
-from growth_hyperneat import Development, GrowingRNN, Node
+from spatial_neat import Development, GrowingRNN, Node
 
 
 def test_optional_merge_projects_states_incoming_and_outgoing_weights():

@@ -4,7 +4,7 @@ import neat
 import numpy as np
 import pytest
 
-from growth_hyperneat import (
+from spatial_neat import (
     ESConfig,
     ESDeveloper,
     NeatCPPN,

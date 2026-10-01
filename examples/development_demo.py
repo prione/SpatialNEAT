@@ -5,7 +5,7 @@ This example verifies lifecycle mechanics, not autonomous developmental learning
 
 import json
 
-from growth_hyperneat import Development, Edge, GrowingRNN, NetworkDefinition, Node
+from spatial_neat import Development, Edge, GrowingRNN, NetworkDefinition, Node
 
 
 def main():

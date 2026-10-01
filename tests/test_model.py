@@ -1,6 +1,6 @@
 import pytest
 
-from growth_hyperneat import Edge, NetworkDefinition, Node, Region, Substrate
+from spatial_neat import Edge, NetworkDefinition, Node, Region, Substrate
 
 
 @pytest.mark.parametrize(

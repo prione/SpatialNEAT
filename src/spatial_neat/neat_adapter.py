@@ -14,8 +14,8 @@ from .runtime import GrowingRNN
 def load_neat_config(path=None, dimensions=3, population_size=12):
     """Load a standard DefaultGenome config; bundled profile uses 2*d+2 inputs.
 
-    The bundled profile is tested with neat-python 0.92, matching the host evo
-    application. Custom configurations may use a custom feature encoder instead.
+    The bundled profile is tested with neat-python 0.92. Custom configurations
+    may use a custom feature encoder instead.
     No custom reproduction/speciation or embodied composite genome is required.
     """
     if version("neat-python") != "0.92":

@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 from test_runtime_development import definition, seeded
 
-from growth_hyperneat import (
+from spatial_neat import (
     Development,
     Edge,
     GrowingRNN,

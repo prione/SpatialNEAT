@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from growth_hyperneat import (
+from spatial_neat import (
     Development,
     Edge,
     GrowingRNN,

@@ -14,7 +14,7 @@ approximately merge neurons during execution.
 - Adaptive hidden-neuron placement using quadtrees in 2D and octrees in 3D.
 - Multiple spatial regions, connection filters, and explicit exploration budgets.
 - Standard `neat-python` genomes, mutation, crossover, reproduction, and speciation.
-- Sparse, synchronous recurrent execution with self-connections and cycles.
+- Array-backed sparse, synchronous recurrent execution with self-connections and cycles.
 - Optional structural changes that preserve retained state and learned weight offsets.
 - Isolated change previews, validated commits, rollback, and JSON snapshots.
 
@@ -139,6 +139,12 @@ An input → hidden → output path therefore needs at least two `step` calls.
 Self-connections and cycles are supported. Supply a constant-valued input anchor
 if the expressed network needs a bias signal.
 
+The float64 NumPy runtime caches integer connection indices and effective weights.
+Only connections still maturing need gate updates. Public state/weight accessors
+return independent dictionaries, while internal computation uses arrays.
+Structural changes rebuild those arrays by stable neuron and connection IDs.
+See [runtime performance](docs/runtime-performance.md) for reproducible measurements.
+
 By default, the sum of absolute recurrent weights into each neuron is limited
 to 0.98. This conservative contraction constraint trades persistent memory for
 stability. Set `recurrent_limit=None` to disable it and evaluate stability in
@@ -163,9 +169,7 @@ from spatial_neat import Development
 grown_substrate = Substrate(
     inputs=substrate.inputs,
     outputs=substrate.outputs,
-    regions=substrate.regions + (
-        Region("extension", (-1, 1, -1), (1, 2, 1), leak=0.2),
-    ),
+    regions=substrate.regions + (Region("extension", (-1, 1, -1), (1, 2, 1), leak=0.2),),
 )
 candidate = developer.develop(cppn, grown_substrate)
 development = Development(brain)

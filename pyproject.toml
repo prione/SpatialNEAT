@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spatial-neat"
-version = "0.3.0"
+version = "0.3.1"
 description = "2D/3D ES-HyperNEAT and recurrent networks with optional structural development"
 readme = "README.md"
 requires-python = ">=3.10"

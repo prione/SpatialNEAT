@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from math import isfinite
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class Maturation:
@@ -23,3 +25,20 @@ class Maturation:
         if not self.steps:
             return dict.fromkeys(gates, 1.0)
         return {key: min(1.0, value + ticks / self.steps) for key, value in gates.items()}
+
+    def _advance_validated(self, gates, active, ticks=1):
+        """Runtime-only array path; gates were validated at creation/restoration.
+
+        Return proposed values before mutation. Fully mature connections need no
+        scan. The public mapping API above continues to validate arbitrary data.
+        """
+        if type(ticks) is not int or ticks < 0:
+            raise ValueError("maturation ticks must be a nonnegative integer")
+        if not ticks or not active.size:
+            return None
+        values = (
+            np.minimum(1.0, gates[active] + ticks / self.steps)
+            if self.steps
+            else np.ones(active.size)
+        )
+        return values, active[values < 1.0]

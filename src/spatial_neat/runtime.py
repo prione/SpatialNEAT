@@ -1,4 +1,4 @@
-"""Sparse synchronous leaky RNN; lifecycle operations live in development."""
+"""Array-backed sparse synchronous RNN; lifecycle operations live in development."""
 
 from dataclasses import dataclass
 from math import isfinite
@@ -8,6 +8,7 @@ import numpy as np
 
 from .maturation import Maturation
 from .model import NetworkDefinition
+from .runtime_layout import RuntimeLayout
 
 
 @dataclass(frozen=True)
@@ -19,10 +20,9 @@ class GrowthReport:
 class GrowingRNN:
     """All non-input neurons update from the previous timestep, including outputs.
 
-    A conservative absolute recurrent row-sum bound controls tanh dynamics.
-    Setting recurrent_limit=None disables it. Growth never changes established
-    base weights or learned deltas; only new weights use remaining row budget.
-    Biases are represented by an explicit constant-valued input anchor if needed.
+    Arrays own runtime state, weights and maturity. Stable logical keys remain at
+    public API/snapshot boundaries; structural changes compile a fresh layout.
+    The recurrent L1 bound constrains tanh dynamics without imposing learning rules.
     """
 
     def __init__(
@@ -37,8 +37,7 @@ class GrowingRNN:
             not isfinite(recurrent_limit) or not 0 < recurrent_limit < 1
         ):
             raise ValueError("recurrent_limit must be in (0, 1) or None")
-        if type(maturation_steps) is not int or maturation_steps < 0:
-            raise ValueError("maturation_steps must be a nonnegative integer")
+        Maturation(maturation_steps)
         if type(max_nodes) is not int or type(max_edges) is not int:
             raise ValueError("runtime budgets must be integers")
         if min(max_nodes, max_edges) < 1:
@@ -48,41 +47,56 @@ class GrowingRNN:
         self.max_nodes, self.max_edges = max_nodes, max_edges
         self._check_budget(network)
         self.network = network
-        self._base = {e.key: float(e.weight) for e in network.edges}
-        self._delta = dict.fromkeys(self._base, 0.0)
-        self._gates = dict.fromkeys(self._base, 1.0)
-        self._normalize_new(network, set(self._base), self._base, self._delta)
-        self._state = {n.key: 0.0 for n in network.nodes if n.role != "input"}
+        self._layout = RuntimeLayout.compile(network)
+        self._base = np.array([e.weight for e in network.edges], dtype=float)
+        self._delta = np.zeros(len(network.edges))
+        self._gates = np.ones(len(network.edges))
+        self._state = np.zeros(len(self._layout.dynamic_keys))
+        self._values = np.empty(len(network.nodes))
+        if recurrent_limit is not None:
+            for row in self._layout.recurrent_rows:
+                amount = sum(abs(float(self._base[i])) for i in row)
+                if amount > recurrent_limit:
+                    self._base[row] *= recurrent_limit / amount
+        self._refresh_weights()
         self._structure_token = object()
-        self._index()
+
+    def _refresh_weights(self):
+        self._effective = self._base + self._delta
+        self._weighted = self._effective * self._gates
+        self._maturing = np.flatnonzero(self._gates < 1.0)
+
+    @staticmethod
+    def _mapping(keys, values):
+        return dict(zip(keys, map(float, values)))
 
     @property
     def state(self):
-        return dict(self._state)
+        return self._mapping(self._layout.dynamic_keys, self._state)
 
     @property
     def base_weights(self):
-        return dict(self._base)
+        return self._mapping(self._layout.edge_keys, self._base)
 
     @property
     def learned_deltas(self):
-        return dict(self._delta)
+        return self._mapping(self._layout.edge_keys, self._delta)
 
     @property
     def gates(self):
-        return dict(self._gates)
+        return self._mapping(self._layout.edge_keys, self._gates)
 
     @property
     def input_keys(self):
-        return tuple(n.key for n in self.network.nodes if n.role == "input")
+        return self._layout.input_keys
 
     @property
     def output_keys(self):
-        return tuple(n.key for n in self.network.nodes if n.role == "output")
+        return self._layout.output_keys
 
     @property
     def complexity(self):
-        """Raw structural counts, including dormant/growing edges, for fitness costs."""
+        """Structural counts include dormant/growing edges."""
         return {
             "nodes": len(self.network.nodes),
             "hidden": self.network.hidden_count,
@@ -93,89 +107,63 @@ class GrowingRNN:
         if len(network.nodes) > self.max_nodes or len(network.edges) > self.max_edges:
             raise ValueError("runtime topology budget exceeded")
 
-    def _normalize_new(self, network, new, base, delta):
-        if self.recurrent_limit is None:
-            return
-        roles = {n.key: n.role for n in network.nodes}
-        rows = {}
-        for edge in network.edges:
-            if roles[edge.source] != "input":
-                rows.setdefault(edge.target, []).append(edge.key)
-        for keys in rows.values():
-            established = sum(abs(base[k] + delta[k]) for k in keys if k not in new)
-            amount = sum(abs(base[k]) for k in keys if k in new)
-            available = max(0.0, self.recurrent_limit - established)
-            if amount > available:
-                for key in keys:
-                    if key in new:
-                        base[key] *= available / amount
-
-    def _index(self):
-        nodes = self.network.nodes
-        positions = {node.key: i for i, node in enumerate(nodes)}
-        self._input_indices = np.array([positions[key] for key in self.input_keys], dtype=int)
-        self._dynamic_keys = tuple(n.key for n in nodes if n.role != "input")
-        self._dynamic_indices = np.array([positions[k] for k in self._dynamic_keys], dtype=int)
-        dynamic = {key: i for i, key in enumerate(self._dynamic_keys)}
-        self._sources = np.array([positions[e.source] for e in self.network.edges], dtype=int)
-        self._targets = np.array([dynamic[e.target] for e in self.network.edges], dtype=int)
-        self._leaks = np.array([nodes[positions[k]].leak for k in self._dynamic_keys])
-        self._roles = {n.key: n.role for n in nodes}
+    def _commit_maturation(self, proposed):
+        if proposed is not None:
+            gates, remaining = proposed
+            active = self._maturing
+            self._gates[active] = gates
+            self._weighted[active] = self._effective[active] * gates
+            self._maturing = remaining
 
     def step(self, inputs) -> dict[str, float]:
+        layout = self._layout
         if isinstance(inputs, Mapping):
-            if set(inputs) != set(self.input_keys):
+            if set(inputs) != set(layout.input_keys):
                 raise ValueError("input mapping must contain exactly all input keys")
-            inputs = [inputs[key] for key in self.input_keys]
+            inputs = [inputs[key] for key in layout.input_keys]
         values = np.asarray(inputs, dtype=float)
-        if values.shape != (len(self.input_keys),) or not np.isfinite(values).all():
+        if values.shape != (len(layout.input_keys),) or not np.isfinite(values).all():
             raise ValueError("inputs must be a finite vector matching input_keys")
-        all_values = np.zeros(len(self.network.nodes))
-        all_values[self._input_indices] = values
-        previous = np.array([self._state[k] for k in self._dynamic_keys])
-        all_values[self._dynamic_indices] = previous
-        weights = np.array(
-            [
-                (self._base[e.key] + self._delta[e.key]) * self._gates[e.key]
-                for e in self.network.edges
-            ]
-        )
-        total = np.zeros(len(self._dynamic_keys))
+        self._values[layout.input_indices] = values
+        self._values[layout.dynamic_indices] = self._state
         with np.errstate(over="ignore", invalid="ignore"):
-            np.add.at(total, self._targets, all_values[self._sources] * weights)
+            total = np.bincount(
+                layout.targets,
+                weights=self._values[layout.sources] * self._weighted,
+                minlength=len(layout.dynamic_keys),
+            )
         if not np.isfinite(total).all():
             raise ValueError("non-finite neural accumulation; state was not advanced")
-        updated = previous + self._leaks * (np.tanh(total) - previous)
-        gates = Maturation(self.maturation_steps).advance(self._gates)
-        self._state = dict(zip(self._dynamic_keys, map(float, updated)))
-        self._gates = gates
-        return {key: self._state[key] for key in self.output_keys}
+        updated = self._state + layout.leaks * (np.tanh(total) - self._state)
+        gates = Maturation(self.maturation_steps)._advance_validated(self._gates, self._maturing)
+        # Failed accumulation/maturation leaves both public state and gates unchanged.
+        self._state = updated
+        self._commit_maturation(gates)
+        return self._mapping(layout.output_keys, self._state[layout.output_indices])
 
     def mature(self, ticks=1):
         """Advance connection maturity only. step() already advances one tick."""
-        self._gates = Maturation(self.maturation_steps).advance(self._gates, ticks)
+        proposed = Maturation(self.maturation_steps)._advance_validated(
+            self._gates, self._maturing, ticks
+        )
+        self._commit_maturation(proposed)
 
     def set_delta(self, source: str, target: str, delta: float) -> float:
-        """Set a learned weight offset, clipped to the remaining recurrent budget.
-
-        The library does not prescribe a reward/gradient learning rule. Callers
-        own their traces/optimizers; this API retains learned offsets across growth.
-        """
-        key = source, target
-        if key not in self._base:
-            raise KeyError(key)
-        if not isfinite(delta) or not isfinite(self._base[key] + delta):
+        """Set an offset, clipped to the remaining recurrent row budget."""
+        layout = self._layout
+        index = layout.edge_indices[source, target]
+        base = float(self._base[index])
+        if not isfinite(delta) or not isfinite(base + delta):
             raise ValueError("learned weight must be finite")
-        if self.recurrent_limit is not None and self._roles[source] != "input":
-            used = sum(
-                abs(self._base[k] + self._delta[k])
-                for k in self._base
-                if k != key and k[1] == target and self._roles[k[0]] != "input"
-            )
+        if self.recurrent_limit is not None and layout.roles[source] != "input":
+            row = layout.recurrent_rows[layout.targets[index]]
+            used = sum(abs(float(self._effective[i])) for i in row if i != index)
             available = max(0.0, self.recurrent_limit - used)
-            effective = float(np.clip(self._base[key] + delta, -available, available))
-            delta = effective - self._base[key]
-        self._delta[key] = float(delta)
+            effective = float(np.clip(base + delta, -available, available))
+            delta = effective - base
+        self._delta[index] = float(delta)
+        self._effective[index] = base + float(delta)
+        self._weighted[index] = self._effective[index] * self._gates[index]
         return float(delta)
 
     def grow(self, candidate: NetworkDefinition) -> GrowthReport:
@@ -196,13 +184,12 @@ class GrowingRNN:
         self._adopt(type(self).from_snapshot(snapshot))
 
     def _adopt(self, staged):
-        # The staged runtime owns independent dicts/arrays and a fresh structure
-        # token. No partially migrated state is exposed by a failed preparation.
+        # Staged arrays/buffers are independent, with a new structural token.
         self.__dict__.update(staged.__dict__)
 
     def reset(self):
-        """Reset temporal state only; learned offsets and growth maturity are retained."""
-        self._state = dict.fromkeys(self._state, 0.0)
+        """Reset temporal state only; retain learned offsets and maturity."""
+        self._state.fill(0.0)
 
     def snapshot(self):
         return {
@@ -214,16 +201,16 @@ class GrowingRNN:
                 "max_nodes": self.max_nodes,
                 "max_edges": self.max_edges,
             },
-            "state": dict(self._state),
+            "state": self.state,
             "weights": [
                 {
-                    "source": e.source,
-                    "target": e.target,
-                    "base": self._base[e.key],
-                    "delta": self._delta[e.key],
-                    "gate": self._gates[e.key],
+                    "source": a,
+                    "target": b,
+                    "base": float(self._base[i]),
+                    "delta": float(self._delta[i]),
+                    "gate": float(self._gates[i]),
                 }
-                for e in self.network.edges
+                for i, (a, b) in enumerate(self._layout.edge_keys)
             ],
         }
 
@@ -233,30 +220,30 @@ class GrowingRNN:
             raise ValueError("unsupported RNN snapshot schema")
         brain = cls(NetworkDefinition.from_dict(data["network"]), **data["options"])
         state = data["state"]
-        if set(state) != set(brain._state) or any(
+        if set(state) != set(brain._layout.dynamic_keys) or any(
             not isfinite(v) or abs(v) > 1 for v in state.values()
         ):
             raise ValueError("invalid saved neural state")
         weights = data["weights"]
         keys = [(w["source"], w["target"]) for w in weights]
-        if len(keys) != len(set(keys)) or set(keys) != set(brain._base):
+        if len(keys) != len(set(keys)) or set(keys) != set(brain._layout.edge_keys):
             raise ValueError("saved weights do not match topology")
-        base, delta, gates = {}, {}, {}
         for key, item in zip(keys, weights):
             if not all(isfinite(item[k]) for k in ("base", "delta", "gate")):
                 raise ValueError("non-finite saved weights")
             if not 0 <= item["gate"] <= 1 or not isfinite(item["base"] + item["delta"]):
                 raise ValueError("invalid saved gate or effective weight")
-            base[key], delta[key], gates[key] = item["base"], item["delta"], item["gate"]
+            i = brain._layout.edge_indices[key]
+            brain._base[i], brain._delta[i], brain._gates[i] = (
+                item["base"],
+                item["delta"],
+                item["gate"],
+            )
+        brain._refresh_weights()
         if brain.recurrent_limit is not None:
-            for target in brain._dynamic_keys:
-                amount = sum(
-                    abs(base[k] + delta[k])
-                    for k in keys
-                    if k[1] == target and brain._roles[k[0]] != "input"
-                )
+            for row in brain._layout.recurrent_rows:
+                amount = sum(abs(float(brain._effective[i])) for i in row)
                 if amount > brain.recurrent_limit + 1e-12:
                     raise ValueError("saved recurrent weights exceed stability budget")
-        brain._base, brain._delta, brain._gates = base, delta, gates
-        brain._state = {key: float(value) for key, value in state.items()}
+        brain._state = np.array([state[key] for key in brain._layout.dynamic_keys], dtype=float)
         return brain

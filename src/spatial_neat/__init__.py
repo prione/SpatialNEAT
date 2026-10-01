@@ -22,7 +22,7 @@ from .model import Edge, NetworkDefinition, Node, Region, Substrate
 from .neat_adapter import NeatCPPN, express_genome, load_neat_config
 from .runtime import GrowingRNN, GrowthReport
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "CPPN",
